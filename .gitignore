@@ -1,0 +1,55 @@
+# Dependencies
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+package-lock.json
+
+# Environment
+.env
+.env.local
+.env.*.local
+local.settings.json
+
+# Runtime data
+server/uploads/*
+!server/uploads/.gitkeep
+server/output/*
+!server/output/.gitkeep
+server/screenshots/*
+!server/screenshots/.gitkeep
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Azure
+publish-profile.xml
+*.pubxml
+*.publishsettings
+
+# Azure Functions
+bin/
+obj/
+.python_packages/
+__blobstorage__/
+__queuestorage__/
+__azurite_db*__.json
+.python_packages/
+
+# Build outputs
+dist/
+build/
+*.tgz
+
+# Logs
+logs/
+*.log

@@ -1,0 +1,14 @@
+node_modules
+npm-debug.log
+.git
+.gitignore
+.github
+README.md
+AZURE_DEPLOYMENT_GUIDE.md
+.env
+.vscode
+server/uploads/*
+server/output/*
+server/screenshots/*
+*.log
+.DS_Store
