@@ -17,6 +17,8 @@
   const toastIcon = document.getElementById("toastIcon");
   const statusDot = document.getElementById("statusDot");
   const statusLabel = document.getElementById("statusLabel");
+  const clearFilesBtn = document.getElementById("clearFilesBtn");
+  const startOverBtn = document.getElementById("startOverBtn");
 
   const MODE_HINTS = {
     screenshot: "Each slide becomes a high-res image — pixel-perfect fidelity, not editable in PowerPoint.",
@@ -105,7 +107,7 @@
           <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4"/></svg>
         </div>
         <div class="file-info">
-          <div class="file-name">${escapeHtml(file.name)}</div>
+          <div class="file-name" title="${escapeHtml(file.name)}">${escapeHtml(file.name)}</div>
           <div class="file-meta">${formatSize(file.size)}</div>
         </div>
         <span class="file-status queued">Queued</span>
@@ -290,6 +292,27 @@
     clearTimeout(toastTimer);
     toast.classList.remove("visible");
   }
+
+  // ── Clear files button ──
+  clearFilesBtn.addEventListener("click", () => {
+    selectedFiles = [];
+    renderFileList();
+  });
+
+  // ── Start over button ──
+  startOverBtn.addEventListener("click", () => {
+    selectedFiles = [];
+    renderFileList();
+    resolution.value = "720p";
+    modeSelect.value = "editable";
+    updateModeHint();
+    hideGlobalProgress();
+    hideToast();
+    // Reset any processing/done/error states
+    convertBtn.classList.remove("loading");
+    const loadingText = convertBtn.querySelector(".btn-loading-text");
+    if (loadingText) loadingText.style.display = "none";
+  });
 
   // ── Util ──
   function escapeHtml(str) {
