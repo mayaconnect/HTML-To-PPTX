@@ -3,6 +3,9 @@
   "version": "1.0.0",
   "description": "Azure Functions API for HTML to PPTX conversion",
   "main": "index.js",
+  "engines": {
+    "node": "18.x"
+  },
   "scripts": {
     "start": "func start",
     "test": "echo \"No tests specified\""

@@ -34,12 +34,49 @@ function pxToPt(px, vpW) {
 }
 
 // ── Color helpers ──
+const CSS_NAMED_COLORS = {
+  black:"000000",white:"FFFFFF",red:"FF0000",green:"008000",blue:"0000FF",
+  yellow:"FFFF00",cyan:"00FFFF",magenta:"FF00FF",orange:"FFA500",purple:"800080",
+  gray:"808080",grey:"808080",silver:"C0C0C0",maroon:"800000",olive:"808000",
+  lime:"00FF00",aqua:"00FFFF",teal:"008080",navy:"000080",fuchsia:"FF00FF",
+  coral:"FF7F50",tomato:"FF6347",gold:"FFD700",indigo:"4B0082",violet:"EE82EE",
+  pink:"FFC0CB",brown:"A52A2A",beige:"F5F5DC",ivory:"FFFFF0",khaki:"F0E68C",
+  salmon:"FA8072",crimson:"DC143C",chocolate:"D2691E",tan:"D2B48C",
+  skyblue:"87CEEB",steelblue:"4682B4",slategray:"708090",darkgray:"A9A9A9",
+  lightgray:"D3D3D3",dimgray:"696969",darkblue:"00008B",darkgreen:"006400",
+  darkred:"8B0000",dodgerblue:"1E90FF",firebrick:"B22222",forestgreen:"228B22",
+  midnightblue:"191970",royalblue:"4169E1",seagreen:"2E8B57",sienna:"A0522D",
+  whitesmoke:"F5F5F5",lavender:"E6E6FA",linen:"FAF0E6",mintcream:"F5FFFA",
+};
+
 function rgbaToHex(rgba) {
   if (!rgba || rgba === "transparent" || rgba === "rgba(0, 0, 0, 0)") return null;
+
+  // Handle rgb()/rgba() format
   const m = rgba.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
-  if (!m) return null;
-  return ((1 << 24) + (parseInt(m[1]) << 16) + (parseInt(m[2]) << 8) + parseInt(m[3]))
-    .toString(16).slice(1).toUpperCase();
+  if (m) {
+    // Check alpha — if fully transparent, return null
+    const alphaMatch = rgba.match(/rgba?\(\d+,\s*\d+,\s*\d+,\s*([\d.]+)\)/);
+    if (alphaMatch && parseFloat(alphaMatch[1]) === 0) return null;
+    return ((1 << 24) + (parseInt(m[1]) << 16) + (parseInt(m[2]) << 8) + parseInt(m[3]))
+      .toString(16).slice(1).toUpperCase();
+  }
+
+  // Handle hex format: #RGB, #RRGGBB, #RGBA, #RRGGBBAA
+  const hexMatch = rgba.match(/^#([0-9a-fA-F]+)$/);
+  if (hexMatch) {
+    let hex = hexMatch[1];
+    if (hex.length === 3) hex = hex[0]+hex[0]+hex[1]+hex[1]+hex[2]+hex[2];
+    else if (hex.length === 4) hex = hex[0]+hex[0]+hex[1]+hex[1]+hex[2]+hex[2]; // ignore alpha shorthand
+    else if (hex.length === 8) hex = hex.slice(0, 6); // strip alpha
+    if (hex.length === 6) return hex.toUpperCase();
+  }
+
+  // Handle named CSS colors
+  const named = CSS_NAMED_COLORS[rgba.toLowerCase().trim()];
+  if (named) return named;
+
+  return null;
 }
 
 function rgbaOpacity(rgba) {
@@ -314,7 +351,7 @@ async function extractSlideElements(browser, htmlFilePath, viewport) {
         o.fontFamily = el.fontFamily;
         o.bold = parseInt(el.fontWeight) >= 700;
         o.italic = el.fontStyle === "italic";
-        o.color = rgbaToHex(el.color) || "FFFFFF";
+        o.color = rgbaToHex(el.color) || "000000";
         o.textTransform = el.textTransform;
         o.textAlign = el.textAlign === "start" ? "left" : el.textAlign;
         o.letterSpacing = (el.letterSpacing && el.letterSpacing !== "normal")
@@ -353,7 +390,7 @@ async function extractSlideElements(browser, htmlFilePath, viewport) {
       return o;
     });
 
-    return { elements, background: rgbaToHex(rootBg) || "1A1A1A", width, height };
+    return { elements, background: rgbaToHex(rootBg) || "FFFFFF", width, height };
   } finally {
     await page.close();
   }
@@ -373,9 +410,14 @@ async function buildEditablePptx(slideDataArray, outputPath) {
     const slide = pptx.addSlide();
     if (sd.background) slide.background = { color: sd.background };
 
-    const sorted = [...sd.elements].sort((a, b) =>
-      a.zIndex !== b.zIndex ? a.zIndex - b.zIndex : a.id - b.id
-    );
+    const sorted = [...sd.elements].sort((a, b) => {
+      if (a.zIndex !== b.zIndex) return a.zIndex - b.zIndex;
+      // At equal z-index, shapes go before text so text renders on top
+      const typeOrder = { shape: 0, bgImage: 0, image: 1, text: 2 };
+      const ta = typeOrder[a.type] ?? 1, tb = typeOrder[b.type] ?? 1;
+      if (ta !== tb) return ta - tb;
+      return a.id - b.id;
+    });
 
     for (const el of sorted) {
       try {
@@ -455,7 +497,7 @@ async function renderElement(slide, el, sd) {
       fontFace: mapFont(el.fontFamily),
       bold: el.bold,
       italic: el.italic,
-      color: el.color || "FFFFFF",
+      color: el.color || "000000",
       align: mapAlign(el.textAlign),
       valign: "top",
       wrap: true,

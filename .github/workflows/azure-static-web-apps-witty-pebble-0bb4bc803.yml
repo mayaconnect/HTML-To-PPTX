@@ -45,6 +45,7 @@ jobs:
           output_location: "" # Built app content directory - leave empty for static files
           skip_app_build: true # No build needed for static HTML/JS
           github_id_token: ${{ steps.idtoken.outputs.result }}
+          api_build_command: "npm install --production"
           ###### End of Repository/Build Configurations ######
 
   close_pull_request_job:
