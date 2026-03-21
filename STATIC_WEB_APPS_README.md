@@ -4,6 +4,13 @@
 
 Your app is now configured for **Azure Static Web Apps** - the simplest free option!
 
+### ✅ Configuration Fixed
+
+The GitHub Actions workflow has been updated with correct paths:
+- ✅ **App location**: `/client` (your static HTML/JS files)
+- ✅ **API location**: `/server/api` (Azure Functions)
+- ✅ **Skip app build**: `true` (no build needed for static files)
+
 ### What Changed
 
 1. **Frontend** (`/client`): Served as static files
