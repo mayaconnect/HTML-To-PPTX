@@ -1,10 +1,22 @@
-const chromium = require('@sparticuz/chromium');
-const puppeteer = require('puppeteer-core');
-const PptxGenJS = require('pptxgenjs');
-const formidable = require('formidable-serverless');
-
 module.exports = async function (context, req) {
   context.log('Convert request received');
+
+  // Lazy-load heavy deps so they don't crash the entire function app at startup
+  let chromium, puppeteer, PptxGenJS, formidable;
+  try {
+    chromium = require('@sparticuz/chromium');
+    puppeteer = require('puppeteer-core');
+    PptxGenJS = require('pptxgenjs');
+    formidable = require('formidable-serverless');
+  } catch (loadErr) {
+    context.log.error('Failed to load dependencies:', loadErr.message);
+    context.res = {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' },
+      body: { error: 'Server dependencies failed to load. Chromium may not be supported in this environment.' }
+    };
+    return;
+  }
 
   try {
     // Parse multipart form data
