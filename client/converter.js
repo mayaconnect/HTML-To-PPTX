@@ -162,7 +162,7 @@ const ClientConverter = (() => {
       } catch { /* ignore */ }
     }
 
-    function walk(el) {
+    function walk(el, inheritedZ) {
       if (!(el instanceof el.ownerDocument.defaultView.HTMLElement)) return;
       if (!vis(el)) return;
 
@@ -175,7 +175,7 @@ const ClientConverter = (() => {
         const r = el.getBoundingClientRect();
         extractPseudo(el, "::before", r, 0);
         extractPseudo(el, "::after", r, 0);
-        for (const c of el.children) walk(c);
+        for (const c of el.children) walk(c, 0);
         return;
       }
 
@@ -184,7 +184,8 @@ const ClientConverter = (() => {
       if (rect.width < 1 && rect.height < 1) return;
 
       const cs = win.getComputedStyle(el);
-      const zIdx = parseInt(cs.zIndex) || 0;
+      const rawZ = parseInt(cs.zIndex);
+      const zIdx = !isNaN(rawZ) ? rawZ : (inheritedZ || 0);
       const opacity = parseFloat(cs.opacity);
 
       extractPseudo(el, "::before", rect, zIdx);
@@ -279,10 +280,10 @@ const ClientConverter = (() => {
         return;
       }
 
-      for (const c of el.children) walk(c);
+      for (const c of el.children) walk(c, zIdx);
     }
 
-    if (doc.body) walk(doc.body);
+    if (doc.body) walk(doc.body, 0);
 
     const rootBg = doc.defaultView.getComputedStyle(doc.body).backgroundColor;
     return { rawElements: results, rootBg };
@@ -598,19 +599,31 @@ const ClientConverter = (() => {
           const slide = pptx.addSlide();
           if (slideData.background) slide.background = { color: slideData.background };
 
-          const sorted = [...slideData.elements].sort((a, b) => {
-            if (a.zIndex !== b.zIndex) return a.zIndex - b.zIndex;
-            const typeOrder = { shape: 0, bgImage: 0, image: 1, text: 2 };
-            const ta = typeOrder[a.type] ?? 1, tb = typeOrder[b.type] ?? 1;
-            if (ta !== tb) return ta - tb;
-            return a.id - b.id;
-          });
+          // Ensure text always renders on top: bump every text element's zIndex
+          // above the highest shape zIndex so text is never covered.
+          const maxNonTextZ = slideData.elements
+            .filter(e => e.type !== "text")
+            .reduce((mx, e) => Math.max(mx, e.zIndex || 0), 0);
 
-          for (const el of sorted) {
-            try {
-              await renderElement(slide, el, slideData);
-            } catch (err) {
-              console.warn(`Skip ${el.tag}/${el.type}: ${err.message}`);
+          for (const el of slideData.elements) {
+            if (el.type === "text") {
+              el.zIndex = Math.max(el.zIndex, maxNonTextZ + 1);
+            }
+          }
+
+          // Render in strict layer order: shapes → images → text (always last)
+          const byZ = (a, b) => (a.zIndex - b.zIndex) || (a.id - b.id);
+          const shapes = slideData.elements.filter(e => e.type === "shape" || e.type === "bgImage").sort(byZ);
+          const images = slideData.elements.filter(e => e.type === "image").sort(byZ);
+          const texts  = slideData.elements.filter(e => e.type === "text").sort(byZ);
+
+          for (const group of [shapes, images, texts]) {
+            for (const el of group) {
+              try {
+                await renderElement(slide, el, slideData);
+              } catch (err) {
+                console.warn(`Skip ${el.tag}/${el.type}: ${err.message}`);
+              }
             }
           }
         } finally {
