@@ -46,6 +46,8 @@ const upload = multer({
 
 // Serve frontend
 app.use(express.static(path.join(__dirname, "..", "client")));
+// Serve prompt files for download
+app.use("/prompts", express.static(path.join(__dirname, "..", ".github", "prompts")));
 
 // Resolution presets
 const RESOLUTIONS = {

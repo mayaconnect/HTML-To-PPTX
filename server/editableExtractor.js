@@ -327,6 +327,8 @@ async function extractSlideElements(browser, htmlFilePath, viewport) {
     const rootBg = await page.evaluate(() => getComputedStyle(document.body).backgroundColor);
 
     // ── Convert to PPTX units ──
+    const TEXT_PAD_PX = 15; // extra width for text containers to prevent wrapping
+
     const elements = rawElements.map((el) => {
       const o = {
         id: el.id,
@@ -334,7 +336,7 @@ async function extractSlideElements(browser, htmlFilePath, viewport) {
         tag: el.tag,
         x: px2inX(Math.max(0, el.x), width),
         y: px2inY(Math.max(0, el.y), height),
-        w: px2inX(el.w, width),
+        w: px2inX(el.type === "text" ? el.w + TEXT_PAD_PX : el.w, width),
         h: px2inY(el.h, height),
         zIndex: el.zIndex || 0,
         opacity: el.opacity ?? 1,
