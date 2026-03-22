@@ -31,17 +31,23 @@
   modeSelect.addEventListener("change", updateModeHint);
   updateModeHint();
 
-  // ── Server health check ──
+  // ── Server health check & mode detection ──
+  let serverOnline = false;
+
   async function checkHealth() {
     try {
       const resp = await fetch("/api/health");
       if (resp.ok) {
+        serverOnline = true;
         statusDot.classList.remove("offline");
-        statusLabel.textContent = "Server online";
+        statusDot.classList.remove("client");
+        statusLabel.textContent = "Server mode";
       } else { throw new Error(); }
     } catch {
+      serverOnline = false;
       statusDot.classList.add("offline");
-      statusLabel.textContent = "Server offline";
+      statusDot.classList.add("client");
+      statusLabel.textContent = "Client mode";
     }
   }
   checkHealth();
@@ -167,80 +173,13 @@
       setFileProgress(i, 0);
     }
 
-    showGlobalProgress("Uploading files…", 5);
-
-    // Mark files as uploading
-    for (let i = 0; i < totalFiles; i++) {
-      setFileStatus(i, "uploading", "Uploading");
-      setFileProgress(i, 20);
-    }
-
-    const formData = new FormData();
-    for (const file of selectedFiles) {
-      formData.append("htmlFiles", file);
-    }
-    formData.append("resolution", resolution.value);
-    formData.append("mode", modeSelect.value);
-
     try {
-      showGlobalProgress("Uploading to server…", 15);
-
-      // Start a simulated per-file progress ticker
-      let currentFileIdx = 0;
-      const progressInterval = setInterval(() => {
-        if (currentFileIdx < totalFiles) {
-          // Mark previous as done
-          if (currentFileIdx > 0) {
-            setFileStatus(currentFileIdx - 1, "done", "Done");
-            setFileProgress(currentFileIdx - 1, 100);
-          }
-          setFileStatus(currentFileIdx, "processing", "Processing");
-          setFileProgress(currentFileIdx, 60);
-
-          const pct = 20 + Math.round((currentFileIdx / totalFiles) * 60);
-          showGlobalProgress(`Processing slide ${currentFileIdx + 1} of ${totalFiles}…`, pct);
-
-          currentFileIdx++;
-        }
-      }, Math.max(800, 2500 / totalFiles));
-
-      const resp = await fetch("/api/convert", {
-        method: "POST",
-        body: formData,
-      });
-
-      clearInterval(progressInterval);
-
-      if (!resp.ok) {
-        const json = await resp.json().catch(() => ({}));
-        throw new Error(json.error || `Server error ${resp.status}`);
+      if (serverOnline) {
+        await convertViaServer(totalFiles, loadingText);
+      } else {
+        await convertClientSide(totalFiles, loadingText);
       }
-
-      // Mark all remaining files as done
-      for (let i = 0; i < totalFiles; i++) {
-        setFileStatus(i, "done", "Done");
-        setFileProgress(i, 100);
-      }
-
-      showGlobalProgress("Generating download…", 90);
-
-      const blob = await resp.blob();
-
-      showGlobalProgress("Complete!", 100);
-
-      // Trigger download
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = "presentation.pptx";
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(url);
-
-      showToast("Presentation downloaded successfully!", "success");
     } catch (err) {
-      // Mark any non-done files as error
       for (let i = 0; i < totalFiles; i++) {
         const li = fileList.querySelector(`[data-idx="${i}"]`);
         if (li && !li.classList.contains("done")) {
@@ -255,6 +194,115 @@
       convertBtn.disabled = selectedFiles.length === 0;
     }
   });
+
+  // ── Server-side conversion ──
+  async function convertViaServer(totalFiles, loadingText) {
+    showGlobalProgress("Uploading files…", 5);
+
+    for (let i = 0; i < totalFiles; i++) {
+      setFileStatus(i, "uploading", "Uploading");
+      setFileProgress(i, 20);
+    }
+
+    const formData = new FormData();
+    for (const file of selectedFiles) {
+      formData.append("htmlFiles", file);
+    }
+    formData.append("resolution", resolution.value);
+    formData.append("mode", modeSelect.value);
+
+    showGlobalProgress("Uploading to server…", 15);
+
+    let currentFileIdx = 0;
+    const progressInterval = setInterval(() => {
+      if (currentFileIdx < totalFiles) {
+        if (currentFileIdx > 0) {
+          setFileStatus(currentFileIdx - 1, "done", "Done");
+          setFileProgress(currentFileIdx - 1, 100);
+        }
+        setFileStatus(currentFileIdx, "processing", "Processing");
+        setFileProgress(currentFileIdx, 60);
+
+        const pct = 20 + Math.round((currentFileIdx / totalFiles) * 60);
+        showGlobalProgress(`Processing slide ${currentFileIdx + 1} of ${totalFiles}…`, pct);
+
+        currentFileIdx++;
+      }
+    }, Math.max(800, 2500 / totalFiles));
+
+    const resp = await fetch("/api/convert", {
+      method: "POST",
+      body: formData,
+    });
+
+    clearInterval(progressInterval);
+
+    if (!resp.ok) {
+      const json = await resp.json().catch(() => ({}));
+      throw new Error(json.error || `Server error ${resp.status}`);
+    }
+
+    for (let i = 0; i < totalFiles; i++) {
+      setFileStatus(i, "done", "Done");
+      setFileProgress(i, 100);
+    }
+
+    showGlobalProgress("Generating download…", 90);
+
+    const blob = await resp.blob();
+
+    showGlobalProgress("Complete!", 100);
+    triggerDownload(blob);
+    showToast("Presentation downloaded successfully!", "success");
+  }
+
+  // ── Client-side conversion ──
+  async function convertClientSide(totalFiles, loadingText) {
+    if (typeof ClientConverter === "undefined") {
+      throw new Error("Client converter not loaded");
+    }
+
+    showGlobalProgress("Converting in browser…", 5);
+
+    const blob = await ClientConverter.convert(
+      [...selectedFiles],
+      { resolution: resolution.value, mode: modeSelect.value },
+      (fileIdx, total, message) => {
+        // Mark previous files as done
+        for (let j = 0; j < fileIdx; j++) {
+          setFileStatus(j, "done", "Done");
+          setFileProgress(j, 100);
+        }
+        if (fileIdx < total) {
+          setFileStatus(fileIdx, "processing", "Processing");
+          setFileProgress(fileIdx, 50);
+        }
+        const pct = 5 + Math.round((fileIdx / total) * 85);
+        showGlobalProgress(message, pct);
+      }
+    );
+
+    for (let i = 0; i < totalFiles; i++) {
+      setFileStatus(i, "done", "Done");
+      setFileProgress(i, 100);
+    }
+
+    showGlobalProgress("Complete!", 100);
+    triggerDownload(blob);
+    showToast("Presentation downloaded successfully!", "success");
+  }
+
+  // ── Download helper ──
+  function triggerDownload(blob) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "presentation.pptx";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  }
 
   // ── Global progress helpers ──
   function showGlobalProgress(text, pct) {
