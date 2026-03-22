@@ -4,7 +4,7 @@
   "description": "Azure Functions API for HTML to PPTX conversion",
   "main": "index.js",
   "engines": {
-    "node": "18.x"
+    "node": ">=18"
   },
   "scripts": {
     "start": "func start",
