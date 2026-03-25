@@ -1,6 +1,7 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+  <meta name="description" content="Convert HTML slide files to editable PowerPoint presentations. Drop your HTML, configure output, and download a polished PPTX." />
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>SlideForge — HTML to PPTX Converter</title>
@@ -167,6 +168,13 @@
       grid-template-columns: 1fr 1fr;
       gap: 16px;
       margin-bottom: 12px;
+    }
+    /* When no files yet: browse card spans full width, file list panel hidden */
+    .upload-row:not(.has-files) {
+      grid-template-columns: 1fr;
+    }
+    .upload-row:not(.has-files) .file-list-area {
+      display: none;
     }
     .upload-row .card { margin-top: 0; }
 
@@ -855,25 +863,71 @@
       background: var(--bg-card);
     }
     .btn-download svg { width: 12px; height: 12px; }
-    .limits-list {
-      list-style: none;
-      padding: 0;
+    /* ── Compatibility Section ── */
+    .compat-category {
+      margin-bottom: 16px;
     }
-    .limits-list li {
+    .compat-category:last-child { margin-bottom: 0; }
+    .compat-header {
       display: flex;
-      align-items: flex-start;
+      align-items: center;
       gap: 8px;
-      font-size: 12px;
-      line-height: 1.5;
-      color: var(--text-secondary);
-      padding: 5px 0;
+      margin-bottom: 8px;
     }
-    .limits-list li svg {
-      width: 14px;
-      height: 14px;
-      color: var(--amber);
+    .compat-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 11px;
+      font-weight: 700;
+      padding: 3px 10px;
+      border-radius: 999px;
+      text-transform: uppercase;
+      letter-spacing: .04em;
+    }
+    .compat-badge svg { width: 12px; height: 12px; }
+    .compat-badge.supported { background: var(--green-dim); color: var(--green); }
+    .compat-badge.partial { background: var(--amber-dim); color: var(--amber); }
+    .compat-badge.unsupported { background: var(--red-dim); color: var(--red); }
+    .compat-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 6px;
+    }
+    .compat-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 7px 12px;
+      border-radius: var(--radius-md);
+      background: var(--bg-elevated);
+      border: 1px solid transparent;
+      font-size: 12px;
+      color: var(--text-secondary);
+      transition: border-color var(--transition);
+    }
+    .compat-item:hover { border-color: var(--border-hover); }
+    .compat-item .ci-icon {
+      width: 18px;
+      height: 18px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
       flex-shrink: 0;
-      margin-top: 1px;
+    }
+    .compat-item .ci-icon svg { width: 10px; height: 10px; }
+    .compat-item .ci-icon.green { background: var(--green-dim); color: var(--green); }
+    .compat-item .ci-icon.amber { background: var(--amber-dim); color: var(--amber); }
+    .compat-item .ci-icon.red   { background: var(--red-dim);   color: var(--red); }
+    .compat-item strong {
+      color: var(--text-primary);
+      font-weight: 600;
+      margin-right: 2px;
+    }
+    .compat-item .ci-detail {
+      color: var(--text-dimmed);
+      font-size: 11px;
     }
 
     /* ── Footer ── */
@@ -955,9 +1009,12 @@
 </head>
 <body>
 
+  <!-- ── Skip to content (accessibility) ── -->
+  <a href="#dropZone" class="sr-only" style="position:absolute;left:-9999px;top:auto;width:1px;height:1px;overflow:hidden;z-index:999;">Skip to content</a>
+
   <!-- ── Navbar ── -->
-  <nav class="navbar">
-    <a class="navbar-brand" href="#">
+  <nav class="navbar" role="navigation" aria-label="Main navigation">
+    <a class="navbar-brand" href="#" aria-label="SlideForge home">
       <div class="navbar-logo">
         <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
           <path stroke-linecap="round" stroke-linejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
@@ -967,19 +1024,19 @@
       <span class="navbar-badge">Beta</span>
     </a>
     <div style="display:flex;align-items:center;gap:14px;">
-      <button class="btn-guide" id="openGuideBtn" type="button">
+      <button class="btn-guide" id="openGuideBtn" type="button" aria-label="Open AI Slide Guide">
         <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"/></svg>
         AI Slide Guide
       </button>
-      <div class="navbar-status" id="serverStatus">
-        <span class="status-dot" id="statusDot"></span>
+      <div class="navbar-status" id="serverStatus" role="status" aria-live="polite">
+        <span class="status-dot" id="statusDot" aria-hidden="true"></span>
         <span id="statusLabel">Checking…</span>
       </div>
     </div>
   </nav>
 
   <!-- ── Main ── -->
-  <main class="main">
+  <main class="main" id="mainContent">
     <div class="container">
 
       <!-- Hero -->
@@ -998,7 +1055,7 @@
       <div class="upload-row">
         <!-- Browse card -->
         <div class="card">
-          <div class="drop-zone" id="dropZone">
+          <div class="drop-zone" id="dropZone" role="button" tabindex="0" aria-label="Click to browse or drag and drop HTML files">
             <div class="drop-zone-icon">
               <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
                 <path stroke-linecap="round" stroke-linejoin="round" d="M12 16V4m0 0l-4 4m4-4l4 4" />
@@ -1074,16 +1131,16 @@
   </main>
 
   <!-- Toast notification -->
-  <div class="toast" id="toast">
+  <div class="toast" id="toast" role="alert" aria-live="assertive">
     <svg id="toastIcon" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg>
     <span id="toastMsg"></span>
   </div>
 
   <!-- AI Guide Modal -->
-  <div class="modal-overlay" id="guideModal">
+  <div class="modal-overlay" id="guideModal" role="dialog" aria-modal="true" aria-labelledby="guideModalTitle">
     <div class="modal">
       <div class="modal-header">
-        <h2>Generate HTML Slides with AI</h2>
+        <h2 id="guideModalTitle">Generate HTML Slides with AI</h2>
         <button class="modal-close" id="closeGuideBtn" type="button">
           <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
         </button>
@@ -1109,10 +1166,10 @@
             <span class="prompt-tag reliable">Reliable</span>
             <span class="prompt-tag caution">Less creative</span>
             <br style="margin-bottom:8px;">
-            <a class="btn-download" href="/prompts/prompt-html.md" download="prompt-html.md">
+            <button class="btn-download" onclick="downloadPrompt('/prompts/prompt-html.md','prompt-html.md')" type="button">
               <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
               prompt-html.md
-            </a>
+            </button>
           </div>
         </div>
 
@@ -1127,47 +1184,177 @@
             <span class="prompt-tag creative-tag">Creative</span>
             <span class="prompt-tag caution">Some loss</span>
             <br style="margin-bottom:8px;">
-            <a class="btn-download" href="/prompts/from-old-pptx-to-html-slides.md" download="from-old-pptx-to-html-slides.md">
+            <button class="btn-download" onclick="downloadPrompt('/prompts/from-old-pptx-to-html-slides.md','from-old-pptx-to-html-slides.md')" type="button">
               <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
               from-old-pptx-to-html-slides.md
-            </a>
+            </button>
+          </div>
+        </div>
+
+        <!-- Business Dashboard prompt -->
+        <div class="prompt-card">
+          <div class="prompt-card-icon structured" style="background:rgba(245,158,11,0.12); color:#F59E0B;">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M3 13h2v8H3zm6-4h2v12H9zm6-6h2v18h-2zm6 10h2v8h-2z"/></svg>
+          </div>
+          <div class="prompt-card-body">
+            <h4>Business Dashboard — KPIs & Data</h4>
+            <p>Optimized for transforming raw data, tables, and metrics into visual KPI cards, progress bars, and status boards. Best for executive reports and dashboards.</p>
+            <span class="prompt-tag reliable">Data-driven</span>
+            <span class="prompt-tag creative-tag">KPIs</span>
+            <br style="margin-bottom:8px;">
+            <button class="btn-download" onclick="downloadPrompt('/prompts/business-dashboard.md','business-dashboard.md')" type="button">
+              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
+              business-dashboard.md
+            </button>
+          </div>
+        </div>
+
+        <!-- Technical Architecture prompt -->
+        <div class="prompt-card">
+          <div class="prompt-card-icon creative" style="background:rgba(59,130,246,0.12); color:#3B82F6;">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+          </div>
+          <div class="prompt-card-body">
+            <h4>Technical Architecture — Systems & Diagrams</h4>
+            <p>Specialized in visualizing architecture diagrams, technical stacks, flows, and system documentation. Uses boxes, arrows, and color-coded components.</p>
+            <span class="prompt-tag reliable">Technical</span>
+            <span class="prompt-tag caution">Diagrams</span>
+            <br style="margin-bottom:8px;">
+            <button class="btn-download" onclick="downloadPrompt('/prompts/technical-architecture.md','technical-architecture.md')" type="button">
+              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
+              technical-architecture.md
+            </button>
           </div>
         </div>
       </div>
 
       <div class="modal-section">
-        <h3>Known Limitations</h3>
-        <p style="margin-bottom:8px;">The converter handles most CSS features. A few caveats remain:</p>
-        <ul class="limits-list">
-          <li>
-            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg>
-            <span><strong>Gradients</strong> — detected and approximated as the dominant solid color (PPTX shape gradients are limited)</span>
-          </li>
-          <li>
-            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg>
-            <span><strong>FontAwesome icons</strong> — auto-rasterized to PNG images (server: Puppeteer screenshot; client: html2canvas)</span>
-          </li>
-          <li>
-            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg>
-            <span><strong>Inline SVGs</strong> — serialized and embedded as images in the PPTX</span>
-          </li>
-          <li>
-            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg>
-            <span><strong>box-shadow</strong> — converted to a shadow shape behind the element</span>
-          </li>
-          <li>
-            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg>
-            <span><strong>CSS rotate</strong> — extracted from <code>transform</code> and applied as PPTX rotation</span>
-          </li>
-          <li>
-            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>
-            <span><strong>text-shadow, CSS filters, scale/skew</strong> — not supported; keep effects simple</span>
-          </li>
-          <li>
-            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>
-            <span><strong>Flexbox / Grid layouts</strong> — use <code>position:absolute</code> with explicit pixel values</span>
-          </li>
-        </ul>
+        <h3>Conversion Compatibility</h3>
+        <p style="margin-bottom:14px;">Overview of what the converter handles when turning your HTML slides into editable PPTX.</p>
+
+        <!-- Fully Supported -->
+        <div class="compat-category">
+          <div class="compat-header">
+            <span class="compat-badge supported">
+              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="3"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg>
+              Fully Supported
+            </span>
+          </div>
+          <div class="compat-grid">
+            <div class="compat-item">
+              <div class="ci-icon green"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="3"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg></div>
+              <span><strong>Fonts &amp; text</strong> <span class="ci-detail">— family, size, weight, color, line-height</span></span>
+            </div>
+            <div class="compat-item">
+              <div class="ci-icon green"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="3"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg></div>
+              <span><strong>Text decoration</strong> <span class="ci-detail">— bold, italic, underline, strikethrough</span></span>
+            </div>
+            <div class="compat-item">
+              <div class="ci-icon green"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="3"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg></div>
+              <span><strong>Background colors</strong> <span class="ci-detail">— solid fills on shapes &amp; text boxes</span></span>
+            </div>
+            <div class="compat-item">
+              <div class="ci-icon green"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="3"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg></div>
+              <span><strong>Borders</strong> <span class="ci-detail">— color, width, dashed/solid, border-radius</span></span>
+            </div>
+            <div class="compat-item">
+              <div class="ci-icon green"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="3"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg></div>
+              <span><strong>Positioning</strong> <span class="ci-detail">— absolute layout, z-index, opacity</span></span>
+            </div>
+            <div class="compat-item">
+              <div class="ci-icon green"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="3"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg></div>
+              <span><strong>CSS rotate</strong> <span class="ci-detail">— extracted from transform, applied natively</span></span>
+            </div>
+            <div class="compat-item">
+              <div class="ci-icon green"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="3"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg></div>
+              <span><strong>box-shadow</strong> <span class="ci-detail">— converted to shadow shape behind element</span></span>
+            </div>
+            <div class="compat-item">
+              <div class="ci-icon green"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="3"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg></div>
+              <span><strong>Images</strong> <span class="ci-detail">— &lt;img&gt;, background-image, data URIs</span></span>
+            </div>
+            <div class="compat-item">
+              <div class="ci-icon green"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="3"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg></div>
+              <span><strong>SVGs</strong> <span class="ci-detail">— serialized and embedded as images</span></span>
+            </div>
+            <div class="compat-item">
+              <div class="ci-icon green"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="3"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg></div>
+              <span><strong>FontAwesome</strong> <span class="ci-detail">— auto-rasterized to PNG via screenshot</span></span>
+            </div>
+            <div class="compat-item">
+              <div class="ci-icon green"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="3"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg></div>
+              <span><strong>Vertical align</strong> <span class="ci-detail">— flex align-items / justify-content</span></span>
+            </div>
+            <div class="compat-item">
+              <div class="ci-icon green"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="3"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg></div>
+              <span><strong>Text formatting</strong> <span class="ci-detail">— letter-spacing, text-transform, padding</span></span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Partially Supported -->
+        <div class="compat-category">
+          <div class="compat-header">
+            <span class="compat-badge partial">
+              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="3"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01"/></svg>
+              Partially Supported
+            </span>
+          </div>
+          <div class="compat-grid">
+            <div class="compat-item">
+              <div class="ci-icon amber"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="3"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01"/></svg></div>
+              <span><strong>Gradients</strong> <span class="ci-detail">— approximated as dominant solid color</span></span>
+            </div>
+            <div class="compat-item">
+              <div class="ci-icon amber"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="3"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01"/></svg></div>
+              <span><strong>Flex / Grid</strong> <span class="ci-detail">— children extracted, use absolute for best results</span></span>
+            </div>
+            <div class="compat-item">
+              <div class="ci-icon amber"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="3"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01"/></svg></div>
+              <span><strong>Pseudo-elements</strong> <span class="ci-detail">— ::before / ::after may be missed</span></span>
+            </div>
+            <div class="compat-item">
+              <div class="ci-icon amber"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="3"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01"/></svg></div>
+              <span><strong>Complex nesting</strong> <span class="ci-detail">— deeply nested divs may flatten</span></span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Not Supported -->
+        <div class="compat-category">
+          <div class="compat-header">
+            <span class="compat-badge unsupported">
+              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="3"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+              Not Supported
+            </span>
+          </div>
+          <div class="compat-grid">
+            <div class="compat-item">
+              <div class="ci-icon red"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="3"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg></div>
+              <span><strong>text-shadow</strong> <span class="ci-detail">— no PPTX equivalent</span></span>
+            </div>
+            <div class="compat-item">
+              <div class="ci-icon red"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="3"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg></div>
+              <span><strong>CSS filters</strong> <span class="ci-detail">— blur, brightness, etc. ignored</span></span>
+            </div>
+            <div class="compat-item">
+              <div class="ci-icon red"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="3"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg></div>
+              <span><strong>Scale / Skew</strong> <span class="ci-detail">— only rotate is extracted</span></span>
+            </div>
+            <div class="compat-item">
+              <div class="ci-icon red"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="3"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg></div>
+              <span><strong>Animations</strong> <span class="ci-detail">— CSS transitions &amp; keyframes stripped</span></span>
+            </div>
+            <div class="compat-item">
+              <div class="ci-icon red"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="3"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg></div>
+              <span><strong>Clip-path</strong> <span class="ci-detail">— complex clipping not available</span></span>
+            </div>
+            <div class="compat-item">
+              <div class="ci-icon red"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="3"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg></div>
+              <span><strong>Backdrop-filter</strong> <span class="ci-detail">— glassmorphism effects dropped</span></span>
+            </div>
+          </div>
+        </div>
       </div>
 
       <div class="modal-section" style="margin-bottom:0;">
@@ -1203,6 +1390,31 @@
     document.getElementById('closeGuideBtn').addEventListener('click', () => guideModal.classList.remove('open'));
     guideModal.addEventListener('click', (e) => { if (e.target === guideModal) guideModal.classList.remove('open'); });
     document.addEventListener('keydown', (e) => { if (e.key === 'Escape') guideModal.classList.remove('open'); });
+
+    // Prompt download — works in both server mode (fetch) and client mode (fallback message)
+    async function downloadPrompt(url, filename) {
+      try {
+        const resp = await fetch(url);
+        if (!resp.ok) throw new Error('not found');
+        const text = await resp.text();
+        const blob = new Blob([text], { type: 'text/markdown' });
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(a.href);
+      } catch {
+        // Client mode: prompt files aren't served; show instructions
+        alert('Prompt file unavailable in client mode.\\n\\nTo download prompts, run SlideForge with the server (node server/index.js) or find the files in .github/prompts/ in the repository.');
+      }
+    }
+
+    // Keyboard support for drop zone
+    document.getElementById('dropZone').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); document.getElementById('fileInput').click(); }
+    });
   </script>
 </body>
 </html>
