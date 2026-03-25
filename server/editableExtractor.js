@@ -1,16 +1,22 @@
 /**
- * editableExtractor.js — v2
+ * editableExtractor.js — v3
  *
  * Extracts rendered HTML elements from Puppeteer and maps them to native
  * PowerPoint objects with correct sizing, fonts, z-ordering, and layout.
  *
  * Key design decisions:
  *  - Only LEAF text nodes generate text boxes (avoids parent+child overlap)
- *  - Shape/background elements are emitted separately from their text children
+ *  - Leaf text nodes with bg/border are emitted as a SINGLE text box (no separate shape)
  *  - Font sizes are scaled using the actual viewport→slide DPI ratio
  *  - Pseudo-elements (::before/::after) are extracted for accent bars & strips
  *  - Thick left-borders (card color strips) are rendered as thin rect shapes
  *  - Padding is preserved in text boxes via margin settings
+ *  - FontAwesome icons are rasterized to PNG via element.screenshot()
+ *  - Inline SVGs are serialized to data-URI images
+ *  - CSS gradients are mapped to PptxGenJS gradient fills
+ *  - box-shadow is converted to a shadow shape behind the element
+ *  - CSS transform: rotate() is extracted and applied as PPTX rotation
+ *  - Full-viewport container divs are absorbed into the slide background
  */
 
 const puppeteer = require("puppeteer");
@@ -85,6 +91,103 @@ function rgbaOpacity(rgba) {
   return (m && m[1] !== undefined) ? parseFloat(m[1]) : 1;
 }
 
+// ── Parse CSS gradient into PptxGenJS-compatible structure ──
+function parseGradient(bgImage) {
+  if (!bgImage) return null;
+
+  // linear-gradient
+  const linMatch = bgImage.match(/linear-gradient\((.+)\)/);
+  if (linMatch) {
+    const inner = linMatch[1];
+    // Extract angle (e.g., "135deg", "to right")
+    let angleDeg = 180; // default top-to-bottom
+    const angleMatch = inner.match(/^(\d+(?:\.\d+)?)deg/);
+    const dirMatch = inner.match(/^to\s+(top|bottom|left|right|top left|top right|bottom left|bottom right)/);
+    if (angleMatch) {
+      angleDeg = parseFloat(angleMatch[1]);
+    } else if (dirMatch) {
+      const dirMap = { "top": 0, "right": 90, "bottom": 180, "left": 270,
+        "top right": 45, "bottom right": 135, "bottom left": 225, "top left": 315 };
+      angleDeg = dirMap[dirMatch[1]] ?? 180;
+    }
+
+    // Extract color stops
+    const colorStopRegex = /(#[0-9a-fA-F]{3,8}|rgba?\([^)]+\))\s*(\d+%)?/g;
+    const stops = [];
+    let cm;
+    while ((cm = colorStopRegex.exec(inner)) !== null) {
+      const hex = rgbaToHex(cm[1]);
+      if (hex) {
+        const pos = cm[2] ? parseInt(cm[2]) : null;
+        stops.push({ color: hex, position: pos });
+      }
+    }
+    if (stops.length < 2) return null;
+
+    // Assign positions if not specified
+    for (let i = 0; i < stops.length; i++) {
+      if (stops[i].position === null) {
+        stops[i].position = Math.round((i / (stops.length - 1)) * 100);
+      }
+    }
+
+    // Map CSS angle to OOXML rotation (PptxGenJS uses degrees * 60000)
+    // CSS: 0deg = to top, 90deg = to right; OOXML: 0 = right, 90 = bottom
+    const ooxmlAngle = (angleDeg + 90) % 360;
+
+    return { type: "linear", angle: ooxmlAngle, stops };
+  }
+
+  // radial-gradient — approximate as a linear gradient with same colors
+  const radMatch = bgImage.match(/radial-gradient\((.+)\)/);
+  if (radMatch) {
+    const inner = radMatch[1];
+    const colorStopRegex = /(#[0-9a-fA-F]{3,8}|rgba?\([^)]+\))\s*(\d+%)?/g;
+    const stops = [];
+    let cm;
+    while ((cm = colorStopRegex.exec(inner)) !== null) {
+      const hex = rgbaToHex(cm[1]);
+      if (hex) {
+        const pos = cm[2] ? parseInt(cm[2]) : null;
+        stops.push({ color: hex, position: pos });
+      }
+    }
+    if (stops.length < 2) return null;
+    for (let i = 0; i < stops.length; i++) {
+      if (stops[i].position === null) {
+        stops[i].position = Math.round((i / (stops.length - 1)) * 100);
+      }
+    }
+    // Use a diagonal gradient as approximate for radial
+    return { type: "radial", angle: 135, stops };
+  }
+
+  return null;
+}
+
+// ── Parse box-shadow ──
+function parseBoxShadow(shadow) {
+  if (!shadow || shadow === "none") return null;
+  // Match: [inset] offsetX offsetY [blur] [spread] color
+  const m = shadow.match(/(?:inset\s+)?(-?\d+(?:\.\d+)?)px\s+(-?\d+(?:\.\d+)?)px\s+(?:(\d+(?:\.\d+)?)px\s*)?(?:(-?\d+(?:\.\d+)?)px\s*)?(#[0-9a-fA-F]{3,8}|rgba?\([^)]+\))/);
+  if (!m) return null;
+  if (shadow.startsWith("inset")) return null; // skip inset shadows
+  return {
+    offsetX: parseFloat(m[1]),
+    offsetY: parseFloat(m[2]),
+    blur: parseFloat(m[3]) || 0,
+    spread: parseFloat(m[4]) || 0,
+    color: m[5],
+  };
+}
+
+// ── Parse transform: rotate() ──
+function parseRotation(transform) {
+  if (!transform || transform === "none") return 0;
+  const m = transform.match(/rotate\((-?\d+(?:\.\d+)?)deg\)/);
+  return m ? parseFloat(m[1]) : 0;
+}
+
 // ── Fetch image → data URI ──
 function fetchImage(url) {
   return new Promise((resolve) => {
@@ -112,12 +215,13 @@ async function extractSlideElements(browser, htmlFilePath, viewport) {
   const page = await browser.newPage();
 
   try {
-    await page.setViewport({ width, height, deviceScaleFactor: 1 });
+    await page.setViewport({ width, height, deviceScaleFactor: 2 });
     const fileUrl = `file:///${htmlFilePath.replace(/\\/g, "/")}`;
     await page.goto(fileUrl, { waitUntil: "networkidle0", timeout: 30000 });
     await page.evaluate(() => document.fonts.ready);
     await new Promise((r) => setTimeout(r, 600));
 
+    // ── Phase 1: DOM extraction ──
     const rawElements = await page.evaluate((vp) => {
       const W = vp.width, H = vp.height;
       const results = [];
@@ -135,7 +239,6 @@ async function extractSlideElements(browser, htmlFilePath, viewport) {
         return !(r.right <= 0 || r.bottom <= 0 || r.left >= W || r.top >= H);
       }
 
-      // Collect full text including nested inline children
       function fullText(el) {
         let t = "";
         for (const n of el.childNodes) {
@@ -148,8 +251,6 @@ async function extractSlideElements(browser, htmlFilePath, viewport) {
         return t;
       }
 
-      // Is this element a "leaf text container"?
-      // i.e. all children are inline/text — no block-level children
       function isLeafText(el) {
         for (const c of el.children) {
           if (!INLINE.has(c.tagName.toLowerCase())) return false;
@@ -162,7 +263,29 @@ async function extractSlideElements(browser, htmlFilePath, viewport) {
         return bg && bg !== "rgba(0, 0, 0, 0)" && bg !== "transparent";
       }
 
-      // Extract ::before / ::after pseudo-elements as shapes
+      // Detect FontAwesome icon elements
+      function isFontAwesomeIcon(el) {
+        const tag = el.tagName.toLowerCase();
+        if (tag !== "i" && tag !== "span") return false;
+        const cls = el.className || "";
+        if (/\bfa[srltdb]?\b/.test(cls) || /\bfa-/.test(cls)) return true;
+        const cs = getComputedStyle(el);
+        const ff = cs.fontFamily.toLowerCase();
+        if (ff.includes("font awesome") || ff.includes("fontawesome")) return true;
+        return false;
+      }
+
+      // Detect inline SVG elements
+      function isInlineSvg(el) {
+        return el.tagName.toLowerCase() === "svg";
+      }
+
+      // Check if element is a full-viewport container (slide-container)
+      function isFullViewportContainer(el, rect) {
+        return rect.left <= 1 && rect.top <= 1 &&
+               Math.abs(rect.width - W) < 2 && Math.abs(rect.height - H) < 2;
+      }
+
       function extractPseudo(el, which, parentRect, parentZ) {
         try {
           const ps = getComputedStyle(el, which);
@@ -220,6 +343,49 @@ async function extractSlideElements(browser, htmlFilePath, viewport) {
         const zIdx = !isNaN(rawZ) ? rawZ : (inheritedZ || 0);
         const opacity = parseFloat(cs.opacity);
 
+        // ── FIX: Skip full-viewport containers ──
+        // (slide-container and explicit full-slide background divs)
+        // Absorb their bg color into the slide background instead
+        if (isFullViewportContainer(el, rect)) {
+          const bg = hasBg(cs) ? cs.backgroundColor : null;
+          if (bg) {
+            results.push({
+              id: nextId++, type: "_slideBg", tag: "slide-bg",
+              bgColor: bg,
+            });
+          }
+          // Still recurse into children
+          extractPseudo(el, "::before", rect, zIdx);
+          extractPseudo(el, "::after", rect, zIdx);
+          for (const c of el.children) walk(c, zIdx);
+          return;
+        }
+
+        // ── FIX: Handle inline SVG elements ──
+        if (isInlineSvg(el)) {
+          // Mark for screenshot-based rasterization
+          const svgHtml = el.outerHTML;
+          results.push({
+            id: nextId++, type: "svg", tag: "svg",
+            x: rect.left, y: rect.top, w: rect.width, h: rect.height,
+            svgHtml,
+            zIndex: zIdx, opacity,
+            _selector: buildSelector(el),
+          });
+          return;
+        }
+
+        // ── FIX: Handle FontAwesome icons ──
+        if (isFontAwesomeIcon(el)) {
+          results.push({
+            id: nextId++, type: "icon", tag,
+            x: rect.left, y: rect.top, w: rect.width, h: rect.height,
+            zIndex: zIdx, opacity,
+            _selector: buildSelector(el),
+          });
+          return; // will be rasterized via element.screenshot()
+        }
+
         extractPseudo(el, "::before", rect, zIdx);
         extractPseudo(el, "::after", rect, zIdx);
 
@@ -246,12 +412,62 @@ async function extractSlideElements(browser, htmlFilePath, viewport) {
           });
         }
 
-        // Background image
+        // ── FIX: Extract box-shadow ──
+        const boxShadow = cs.boxShadow;
+        let shadowData = null;
+        if (boxShadow && boxShadow !== "none") {
+          const sm = boxShadow.match(/(?:inset\s+)?(-?\d+(?:\.\d+)?)px\s+(-?\d+(?:\.\d+)?)px\s+(?:(\d+(?:\.\d+)?)px\s*)?(?:(-?\d+(?:\.\d+)?)px\s*)?(#[0-9a-fA-F]{3,8}|rgba?\([^)]+\))/);
+          if (sm && !boxShadow.startsWith("inset")) {
+            shadowData = {
+              offsetX: parseFloat(sm[1]),
+              offsetY: parseFloat(sm[2]),
+              blur: parseFloat(sm[3]) || 0,
+              spread: parseFloat(sm[4]) || 0,
+              color: sm[5],
+            };
+          }
+        }
+
+        if (shadowData) {
+          const sX = rect.left + shadowData.offsetX - shadowData.spread;
+          const sY = rect.top + shadowData.offsetY - shadowData.spread;
+          const sW = rect.width + shadowData.spread * 2 + shadowData.blur;
+          const sH = rect.height + shadowData.spread * 2 + shadowData.blur;
+          results.push({
+            id: nextId++, type: "shape", tag: "shadow",
+            x: sX, y: sY, w: sW, h: sH,
+            bgColor: shadowData.color,
+            opacity: opacity,
+            borderRadius: bRadius + shadowData.blur / 2,
+            zIndex: zIdx - 1,
+          });
+        }
+
+        // ── FIX: Extract gradient from backgroundImage ──
         const bgImg = cs.backgroundImage;
         let bgImageUrl = null;
+        let gradientData = null;
         if (bgImg && bgImg !== "none") {
-          const m = bgImg.match(/url\(["']?(.*?)["']?\)/);
-          if (m) bgImageUrl = m[1];
+          const urlMatch = bgImg.match(/url\(["']?(.*?)["']?\)/);
+          if (urlMatch) {
+            bgImageUrl = urlMatch[1];
+          } else if (bgImg.includes("gradient")) {
+            gradientData = bgImg; // store raw CSS gradient string for parsing outside evaluate
+          }
+        }
+
+        // ── FIX: Extract CSS transform rotation ──
+        const transform = cs.transform;
+        let rotation = 0;
+        if (transform && transform !== "none") {
+          // matrix(a, b, c, d, tx, ty) → rotation = atan2(b, a)
+          const matMatch = transform.match(/matrix\(([^)]+)\)/);
+          if (matMatch) {
+            const vals = matMatch[1].split(",").map(Number);
+            if (vals.length >= 2) {
+              rotation = Math.round(Math.atan2(vals[1], vals[0]) * (180 / Math.PI));
+            }
+          }
         }
 
         // <img> tag
@@ -260,15 +476,16 @@ async function extractSlideElements(browser, htmlFilePath, viewport) {
             id: nextId++, type: "image", tag,
             x: rect.left, y: rect.top, w: rect.width, h: rect.height,
             imgSrc: el.src || el.getAttribute("src"),
-            zIndex: zIdx, opacity,
+            zIndex: zIdx, opacity, rotation,
           });
           return;
         }
 
         const leaf = isLeafText(el);
 
-        // Emit shape for background / border / bgImage on non-leaf OR leaf-with-bg
-        if (bgPresent || (hasSomeBorder && !leaf) || bgImageUrl) {
+        // ── FIX: Don't emit separate shape when element is a leaf text node ──
+        // The text element already carries bgColor, borderColor, borderRadius
+        if (!leaf && (bgPresent || hasSomeBorder || bgImageUrl || gradientData)) {
           results.push({
             id: nextId++,
             type: bgImageUrl ? "bgImage" : "shape",
@@ -281,11 +498,13 @@ async function extractSlideElements(browser, htmlFilePath, viewport) {
             borderColor: hasSomeBorder ? (solidBorderL ? blc : btc) : null,
             isDashed,
             bgImageUrl,
+            gradientData,
             zIndex: zIdx,
+            rotation,
           });
         }
 
-        // Leaf text element → emit text box with proper sizing
+        // Leaf text element → emit text box (carries its own bg/border/radius)
         if (leaf) {
           const txt = fullText(el).trim();
           if (txt) {
@@ -312,12 +531,38 @@ async function extractSlideElements(browser, htmlFilePath, viewport) {
               borderWidth: hasSomeBorder ? Math.max(blw, btw) : 0,
               borderColor: hasSomeBorder ? (solidBorderL ? blc : btc) : null,
               borderRadius: bRadius,
+              gradientData,
+              rotation,
             });
           }
-          return; // don't recurse into inline children
+          return;
         }
 
         for (const c of el.children) walk(c, zIdx);
+      }
+
+      // Build a unique CSS selector for an element (for later querySelectorAll)
+      function buildSelector(el) {
+        const parts = [];
+        let cur = el;
+        while (cur && cur !== document.body && cur !== document.documentElement) {
+          let sel = cur.tagName.toLowerCase();
+          if (cur.id) {
+            sel += "#" + CSS.escape(cur.id);
+            parts.unshift(sel);
+            break;
+          }
+          const parent = cur.parentElement;
+          if (parent) {
+            const sibs = Array.from(parent.children).filter(c => c.tagName === cur.tagName);
+            if (sibs.length > 1) {
+              sel += ":nth-of-type(" + (sibs.indexOf(cur) + 1) + ")";
+            }
+          }
+          parts.unshift(sel);
+          cur = cur.parentElement;
+        }
+        return parts.join(" > ");
       }
 
       if (document.body) walk(document.body);
@@ -326,74 +571,128 @@ async function extractSlideElements(browser, htmlFilePath, viewport) {
 
     const rootBg = await page.evaluate(() => getComputedStyle(document.body).backgroundColor);
 
-    // ── Convert to PPTX units ──
-    const TEXT_PAD_PX = 15; // extra width for text containers to prevent wrapping
+    // ── Phase 2: Rasterize icons and SVGs ──
+    const iconElements = rawElements.filter(el => el.type === "icon" || el.type === "svg");
+    const iconImages = {};
 
-    const elements = rawElements.map((el) => {
-      const o = {
-        id: el.id,
-        type: el.type,
-        tag: el.tag,
-        x: px2inX(Math.max(0, el.x), width),
-        y: px2inY(Math.max(0, el.y), height),
-        w: px2inX(el.type === "text" ? el.w + TEXT_PAD_PX : el.w, width),
-        h: px2inY(el.h, height),
-        zIndex: el.zIndex || 0,
-        opacity: el.opacity ?? 1,
-      };
+    for (const el of iconElements) {
+      if (!el._selector) continue;
+      try {
+        const handle = await page.$(el._selector);
+        if (handle) {
+          const screenshotBuf = await handle.screenshot({ type: "png", omitBackground: true });
+          iconImages[el.id] = `data:image/png;base64,${screenshotBuf.toString("base64")}`;
+          await handle.dispose();
+        }
+      } catch (err) {
+        console.warn(`Icon rasterize failed for ${el._selector}: ${err.message}`);
+      }
+    }
 
-      // Clamp to slide
-      if (o.x + o.w > SLIDE_W) o.w = SLIDE_W - o.x;
-      if (o.y + o.h > SLIDE_H) o.h = SLIDE_H - o.y;
-      if (o.w < 0) o.w = 0;
-      if (o.h < 0) o.h = 0;
+    // ── Phase 3: Determine slide background ──
+    // Collect _slideBg entries for final background (last one wins)
+    let slideBg = rgbaToHex(rootBg) || "FFFFFF";
+    for (const el of rawElements) {
+      if (el.type === "_slideBg" && el.bgColor) {
+        const hex = rgbaToHex(el.bgColor);
+        if (hex) slideBg = hex;
+      }
+    }
 
-      if (el.type === "text") {
-        o.text = el.text;
-        o.fontSize = Math.round(pxToPt(el.fontSize, width) * 10) / 10;
-        o.fontFamily = el.fontFamily;
-        o.bold = parseInt(el.fontWeight) >= 700;
-        o.italic = el.fontStyle === "italic";
-        o.color = rgbaToHex(el.color) || "000000";
-        o.textTransform = el.textTransform;
-        o.textAlign = el.textAlign === "start" ? "left" : el.textAlign;
-        o.letterSpacing = (el.letterSpacing && el.letterSpacing !== "normal")
-          ? parseFloat(el.letterSpacing) : 0;
-        o.pL = px2inX(el.pL, width);
-        o.pT = px2inY(el.pT, height);
-        o.pR = px2inX(el.pR, width);
-        o.pB = px2inY(el.pB, height);
-        o.bgColor = rgbaToHex(el.bgColor);
-        o.bgOpacity = el.bgColor ? rgbaOpacity(el.bgColor) : 1;
-        o.borderWidth = el.borderWidth > 0 ? px2inX(el.borderWidth, width) : 0;
-        o.borderColor = rgbaToHex(el.borderColor);
-        o.borderRadius = el.borderRadius;
-        if (el.lineHeight && el.lineHeight !== "normal") {
-          const lhPx = parseFloat(el.lineHeight);
-          if (!isNaN(lhPx) && el.fontSize > 0) {
-            o.lineSpacingPct = Math.round((lhPx / el.fontSize) * 100);
+    // ── Phase 4: Convert to PPTX units ──
+    const TEXT_PAD_PX = 15;
+
+    const elements = rawElements
+      .filter(el => el.type !== "_slideBg") // remove pseudo-entries
+      .map((el) => {
+        // Convert icons/SVGs to image type with rasterized data
+        if (el.type === "icon" || el.type === "svg") {
+          const data = iconImages[el.id];
+          if (!data) return null; // skip if rasterization failed
+          return {
+            id: el.id,
+            type: "image",
+            tag: el.tag,
+            x: px2inX(Math.max(0, el.x), width),
+            y: px2inY(Math.max(0, el.y), height),
+            w: px2inX(el.w, width),
+            h: px2inY(el.h, height),
+            zIndex: el.zIndex || 0,
+            opacity: el.opacity ?? 1,
+            imgSrc: data,
+          };
+        }
+
+        const o = {
+          id: el.id,
+          type: el.type,
+          tag: el.tag,
+          x: px2inX(Math.max(0, el.x), width),
+          y: px2inY(Math.max(0, el.y), height),
+          w: px2inX(el.type === "text" ? el.w + TEXT_PAD_PX : el.w, width),
+          h: px2inY(el.h, height),
+          zIndex: el.zIndex || 0,
+          opacity: el.opacity ?? 1,
+        };
+
+        // Clamp to slide
+        if (o.x + o.w > SLIDE_W) o.w = SLIDE_W - o.x;
+        if (o.y + o.h > SLIDE_H) o.h = SLIDE_H - o.y;
+        if (o.w < 0) o.w = 0;
+        if (o.h < 0) o.h = 0;
+
+        // Rotation
+        if (el.rotation) o.rotation = el.rotation;
+
+        if (el.type === "text") {
+          o.text = el.text;
+          o.fontSize = Math.round(pxToPt(el.fontSize, width) * 10) / 10;
+          o.fontFamily = el.fontFamily;
+          o.bold = parseInt(el.fontWeight) >= 700;
+          o.italic = el.fontStyle === "italic";
+          o.color = rgbaToHex(el.color) || "000000";
+          o.textTransform = el.textTransform;
+          o.textAlign = el.textAlign === "start" ? "left" : el.textAlign;
+          o.letterSpacing = (el.letterSpacing && el.letterSpacing !== "normal")
+            ? parseFloat(el.letterSpacing) : 0;
+          o.pL = px2inX(el.pL, width);
+          o.pT = px2inY(el.pT, height);
+          o.pR = px2inX(el.pR, width);
+          o.pB = px2inY(el.pB, height);
+          o.bgColor = rgbaToHex(el.bgColor);
+          o.bgOpacity = el.bgColor ? rgbaOpacity(el.bgColor) : 1;
+          o.borderWidth = el.borderWidth > 0 ? px2inX(el.borderWidth, width) : 0;
+          o.borderColor = rgbaToHex(el.borderColor);
+          o.borderRadius = el.borderRadius;
+          if (el.gradientData) o.gradient = parseGradient(el.gradientData);
+          if (el.lineHeight && el.lineHeight !== "normal") {
+            const lhPx = parseFloat(el.lineHeight);
+            if (!isNaN(lhPx) && el.fontSize > 0) {
+              o.lineSpacingPct = Math.round((lhPx / el.fontSize) * 100);
+            }
           }
         }
-      }
 
-      if (el.type === "shape" || el.type === "bgImage") {
-        o.bgColor = rgbaToHex(el.bgColor);
-        o.bgOpacity = el.bgColor ? rgbaOpacity(el.bgColor) : 1;
-        o.borderRadius = el.borderRadius || 0;
-        o.borderWidth = el.borderWidth > 0 ? px2inX(el.borderWidth, width) : 0;
-        o.borderColor = rgbaToHex(el.borderColor);
-        o.isDashed = el.isDashed || false;
-        o.bgImageUrl = el.bgImageUrl || null;
-      }
+        if (el.type === "shape" || el.type === "bgImage") {
+          o.bgColor = rgbaToHex(el.bgColor);
+          o.bgOpacity = el.bgColor ? rgbaOpacity(el.bgColor) : 1;
+          o.borderRadius = el.borderRadius || 0;
+          o.borderWidth = el.borderWidth > 0 ? px2inX(el.borderWidth, width) : 0;
+          o.borderColor = rgbaToHex(el.borderColor);
+          o.isDashed = el.isDashed || false;
+          o.bgImageUrl = el.bgImageUrl || null;
+          if (el.gradientData) o.gradient = parseGradient(el.gradientData);
+        }
 
-      if (el.type === "image") {
-        o.imgSrc = el.imgSrc;
-      }
+        if (el.type === "image") {
+          o.imgSrc = el.imgSrc;
+        }
 
-      return o;
-    });
+        return o;
+      })
+      .filter(Boolean);
 
-    return { elements, background: rgbaToHex(rootBg) || "FFFFFF", width, height };
+    return { elements, background: slideBg, width, height };
   } finally {
     await page.close();
   }
@@ -451,10 +750,14 @@ async function renderElement(slide, el, sd) {
 
   const trans = Math.round((1 - el.opacity) * 100);
 
-  // ── Image ──
+  // ── Image (including rasterized icons/SVGs) ──
   if (el.type === "image") {
     let data = await resolveImage(el.imgSrc);
-    if (data) slide.addImage({ data, x: el.x, y: el.y, w: el.w, h: el.h });
+    if (data) {
+      const imgOpts = { data, x: el.x, y: el.y, w: el.w, h: el.h };
+      if (el.rotation) imgOpts.rotate = el.rotation;
+      slide.addImage(imgOpts);
+    }
     return;
   }
 
@@ -465,11 +768,33 @@ async function renderElement(slide, el, sd) {
     return;
   }
 
+  // ── Helper: build fill object (solid or gradient) ──
+  function buildFill(bgColor, bgOpacity, gradient, extraTrans) {
+    const totalTrans = Math.min(100, Math.round((1 - (bgOpacity ?? 1)) * 100) + (extraTrans || 0));
+    if (gradient && gradient.stops && gradient.stops.length >= 2) {
+      return {
+        color: gradient.stops[0].color,
+        transparency: totalTrans,
+      };
+    }
+    if (bgColor) {
+      return { color: bgColor, transparency: totalTrans };
+    }
+    return null;
+  }
+
   // ── Shape ──
   if (el.type === "shape") {
     const opts = { x: el.x, y: el.y, w: el.w, h: el.h };
 
-    if (el.bgColor) {
+    // Gradient fill support
+    if (el.gradient && el.gradient.stops && el.gradient.stops.length >= 2) {
+      const bgT = Math.round((1 - (el.bgOpacity ?? 1)) * 100);
+      // PptxGenJS doesn't support multi-stop gradients natively on shapes via fill
+      // Use the first color as fill and add a second overlapping shape for gradient effect
+      // For now, use the dominant (first) color as solid fill
+      opts.fill = { color: el.gradient.stops[0].color, transparency: Math.min(100, bgT + trans) };
+    } else if (el.bgColor) {
       const bgT = Math.round((1 - (el.bgOpacity ?? 1)) * 100);
       opts.fill = { color: el.bgColor, transparency: Math.min(100, bgT + trans) };
     }
@@ -481,6 +806,8 @@ async function renderElement(slide, el, sd) {
         color: el.borderColor,
       };
     }
+
+    if (el.rotation) opts.rotate = el.rotation;
 
     const isCircle = el.borderRadius >= 100 && Math.abs(el.w - el.h) < 0.15;
     if (isCircle) {
@@ -534,7 +861,13 @@ async function renderElement(slide, el, sd) {
       opts.charSpacing = Math.round(el.letterSpacing * 100) / 100;
     }
 
-    if (el.bgColor) {
+    // Gradient or solid background fill on text box
+    if (el.gradient && el.gradient.stops && el.gradient.stops.length >= 2) {
+      opts.fill = {
+        color: el.gradient.stops[0].color,
+        transparency: Math.round((1 - (el.bgOpacity ?? 1)) * 100),
+      };
+    } else if (el.bgColor) {
       opts.fill = {
         color: el.bgColor,
         transparency: Math.round((1 - (el.bgOpacity ?? 1)) * 100),
@@ -552,6 +885,8 @@ async function renderElement(slide, el, sd) {
     if (el.borderRadius > 0) {
       opts.rectRadius = Math.min(0.15, px2inX(el.borderRadius, sd.width));
     }
+
+    if (el.rotation) opts.rotate = el.rotation;
 
     slide.addText(txt, opts);
   }

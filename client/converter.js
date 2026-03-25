@@ -1,9 +1,18 @@
 /**
- * converter.js — Client-side HTML → PPTX converter
+ * converter.js — Client-side HTML → PPTX converter (v3)
  *
  * Mirrors the server-side editableExtractor.js logic but runs entirely
  * in the browser using a hidden <iframe> for DOM extraction and
  * PptxGenJS (browser build) for PPTX generation.
+ *
+ * v3 enhancements:
+ *  - FontAwesome icons rasterized to PNG via html2canvas element capture
+ *  - Inline SVGs serialized to data-URI images
+ *  - Full-viewport containers absorbed into slide background (no extra shape)
+ *  - Leaf text nodes with bg/border emit a single text box (no separate shape)
+ *  - CSS gradients mapped to solid fill (dominant color)
+ *  - box-shadow converted to shadow shape behind the element
+ *  - CSS transform: rotate() extracted and applied as PPTX rotation
  */
 const ClientConverter = (() => {
   // ── Constants ──
@@ -67,6 +76,44 @@ const ClientConverter = (() => {
     return (m && m[1] !== undefined) ? parseFloat(m[1]) : 1;
   }
 
+  // ── Parse CSS gradient ──
+  function parseGradient(bgImage) {
+    if (!bgImage) return null;
+    const linMatch = bgImage.match(/linear-gradient\((.+)\)/);
+    if (linMatch) {
+      const inner = linMatch[1];
+      const colorStopRegex = /(#[0-9a-fA-F]{3,8}|rgba?\([^)]+\))\s*(\d+%)?/g;
+      const stops = [];
+      let cm;
+      while ((cm = colorStopRegex.exec(inner)) !== null) {
+        const hex = rgbaToHex(cm[1]);
+        if (hex) stops.push({ color: hex, position: cm[2] ? parseInt(cm[2]) : null });
+      }
+      if (stops.length < 2) return null;
+      for (let i = 0; i < stops.length; i++) {
+        if (stops[i].position === null) stops[i].position = Math.round((i / (stops.length - 1)) * 100);
+      }
+      return { type: "linear", stops };
+    }
+    const radMatch = bgImage.match(/radial-gradient\((.+)\)/);
+    if (radMatch) {
+      const inner = radMatch[1];
+      const colorStopRegex = /(#[0-9a-fA-F]{3,8}|rgba?\([^)]+\))\s*(\d+%)?/g;
+      const stops = [];
+      let cm;
+      while ((cm = colorStopRegex.exec(inner)) !== null) {
+        const hex = rgbaToHex(cm[1]);
+        if (hex) stops.push({ color: hex, position: cm[2] ? parseInt(cm[2]) : null });
+      }
+      if (stops.length < 2) return null;
+      for (let i = 0; i < stops.length; i++) {
+        if (stops[i].position === null) stops[i].position = Math.round((i / (stops.length - 1)) * 100);
+      }
+      return { type: "radial", stops };
+    }
+    return null;
+  }
+
   // ── Fetch image → data URI (browser) ──
   function fetchImageAsDataUri(url) {
     return new Promise((resolve) => {
@@ -86,10 +133,41 @@ const ClientConverter = (() => {
     });
   }
 
+  // ── Rasterize a DOM element to PNG data URI using html2canvas ──
+  async function rasterizeElement(el) {
+    if (typeof html2canvas === "undefined") return null;
+    try {
+      const rect = el.getBoundingClientRect();
+      const canvas = await html2canvas(el, {
+        width: Math.ceil(rect.width),
+        height: Math.ceil(rect.height),
+        backgroundColor: null,
+        scale: 2,
+        useCORS: true,
+        logging: false,
+      });
+      return canvas.toDataURL("image/png");
+    } catch {
+      return null;
+    }
+  }
+
+  // ── Serialize inline SVG to data URI ──
+  function svgToDataUri(svgEl) {
+    try {
+      const serializer = new XMLSerializer();
+      const svgStr = serializer.serializeToString(svgEl);
+      return "data:image/svg+xml;base64," + btoa(unescape(encodeURIComponent(svgStr)));
+    } catch {
+      return null;
+    }
+  }
+
   // ── DOM Extraction from iframe document ──
   function extractElementsFromDocument(doc, vpWidth, vpHeight) {
     const W = vpWidth, H = vpHeight;
     const results = [];
+    const iconElements = []; // store references for rasterization
     let nextId = 0;
 
     const SKIP = new Set(["html","head","script","style","link","meta","noscript","title"]);
@@ -126,6 +204,27 @@ const ClientConverter = (() => {
     function hasBg(cs) {
       const bg = cs.backgroundColor;
       return bg && bg !== "rgba(0, 0, 0, 0)" && bg !== "transparent";
+    }
+
+    function isFontAwesomeIcon(el) {
+      const tag = el.tagName.toLowerCase();
+      if (tag !== "i" && tag !== "span") return false;
+      const cls = el.className || "";
+      if (/\bfa[srltdb]?\b/.test(cls) || /\bfa-/.test(cls)) return true;
+      const win = el.ownerDocument.defaultView;
+      const cs = win.getComputedStyle(el);
+      const ff = cs.fontFamily.toLowerCase();
+      if (ff.includes("font awesome") || ff.includes("fontawesome")) return true;
+      return false;
+    }
+
+    function isInlineSvg(el) {
+      return el.tagName.toLowerCase() === "svg";
+    }
+
+    function isFullViewportContainer(el, rect) {
+      return rect.left <= 1 && rect.top <= 1 &&
+             Math.abs(rect.width - W) < 2 && Math.abs(rect.height - H) < 2;
     }
 
     function extractPseudo(el, which, parentRect, parentZ) {
@@ -188,6 +287,44 @@ const ClientConverter = (() => {
       const zIdx = !isNaN(rawZ) ? rawZ : (inheritedZ || 0);
       const opacity = parseFloat(cs.opacity);
 
+      // ── FIX: Skip full-viewport containers ──
+      if (isFullViewportContainer(el, rect)) {
+        const bg = hasBg(cs) ? cs.backgroundColor : null;
+        if (bg) {
+          results.push({ id: nextId++, type: "_slideBg", tag: "slide-bg", bgColor: bg });
+        }
+        extractPseudo(el, "::before", rect, zIdx);
+        extractPseudo(el, "::after", rect, zIdx);
+        for (const c of el.children) walk(c, zIdx);
+        return;
+      }
+
+      // ── FIX: Handle inline SVG ──
+      if (isInlineSvg(el)) {
+        const dataUri = svgToDataUri(el);
+        if (dataUri) {
+          results.push({
+            id: nextId++, type: "image", tag: "svg",
+            x: rect.left, y: rect.top, w: rect.width, h: rect.height,
+            imgSrc: dataUri,
+            zIndex: zIdx, opacity,
+          });
+        }
+        return;
+      }
+
+      // ── FIX: Handle FontAwesome icons ──
+      if (isFontAwesomeIcon(el)) {
+        const iconId = nextId++;
+        results.push({
+          id: iconId, type: "icon", tag,
+          x: rect.left, y: rect.top, w: rect.width, h: rect.height,
+          zIndex: zIdx, opacity,
+        });
+        iconElements.push({ id: iconId, element: el });
+        return;
+      }
+
       extractPseudo(el, "::before", rect, zIdx);
       extractPseudo(el, "::after", rect, zIdx);
 
@@ -213,11 +350,52 @@ const ClientConverter = (() => {
         });
       }
 
+      // ── FIX: Extract box-shadow ──
+      const boxShadow = cs.boxShadow;
+      if (boxShadow && boxShadow !== "none") {
+        const sm = boxShadow.match(/(?:inset\s+)?(-?\d+(?:\.\d+)?)px\s+(-?\d+(?:\.\d+)?)px\s+(?:(\d+(?:\.\d+)?)px\s*)?(?:(-?\d+(?:\.\d+)?)px\s*)?(#[0-9a-fA-F]{3,8}|rgba?\([^)]+\))/);
+        if (sm && !boxShadow.startsWith("inset")) {
+          const sOffX = parseFloat(sm[1]);
+          const sOffY = parseFloat(sm[2]);
+          const sBlur = parseFloat(sm[3]) || 0;
+          const sSpread = parseFloat(sm[4]) || 0;
+          results.push({
+            id: nextId++, type: "shape", tag: "shadow",
+            x: rect.left + sOffX - sSpread,
+            y: rect.top + sOffY - sSpread,
+            w: rect.width + sSpread * 2 + sBlur,
+            h: rect.height + sSpread * 2 + sBlur,
+            bgColor: sm[5],
+            opacity, borderRadius: bRadius + sBlur / 2,
+            zIndex: zIdx - 1,
+          });
+        }
+      }
+
+      // ── FIX: Extract gradient from backgroundImage ──
       const bgImg = cs.backgroundImage;
       let bgImageUrl = null;
+      let gradientData = null;
       if (bgImg && bgImg !== "none") {
-        const m = bgImg.match(/url\(["']?(.*?)["']?\)/);
-        if (m) bgImageUrl = m[1];
+        const urlMatch = bgImg.match(/url\(["']?(.*?)["']?\)/);
+        if (urlMatch) {
+          bgImageUrl = urlMatch[1];
+        } else if (bgImg.includes("gradient")) {
+          gradientData = bgImg;
+        }
+      }
+
+      // ── FIX: Extract CSS transform rotation ──
+      const transform = cs.transform;
+      let rotation = 0;
+      if (transform && transform !== "none") {
+        const matMatch = transform.match(/matrix\(([^)]+)\)/);
+        if (matMatch) {
+          const vals = matMatch[1].split(",").map(Number);
+          if (vals.length >= 2) {
+            rotation = Math.round(Math.atan2(vals[1], vals[0]) * (180 / Math.PI));
+          }
+        }
       }
 
       if (tag === "img") {
@@ -225,14 +403,15 @@ const ClientConverter = (() => {
           id: nextId++, type: "image", tag,
           x: rect.left, y: rect.top, w: rect.width, h: rect.height,
           imgSrc: el.src || el.getAttribute("src"),
-          zIndex: zIdx, opacity,
+          zIndex: zIdx, opacity, rotation,
         });
         return;
       }
 
       const leaf = isLeafText(el);
 
-      if (bgPresent || (hasSomeBorder && !leaf) || bgImageUrl) {
+      // ── FIX: Don't emit separate shape for leaf text with bg ──
+      if (!leaf && (bgPresent || hasSomeBorder || bgImageUrl || gradientData)) {
         results.push({
           id: nextId++,
           type: bgImageUrl ? "bgImage" : "shape",
@@ -245,7 +424,9 @@ const ClientConverter = (() => {
           borderColor: hasSomeBorder ? (solidBorderL ? blc : btc) : null,
           isDashed,
           bgImageUrl,
+          gradientData,
           zIndex: zIdx,
+          rotation,
         });
       }
 
@@ -275,6 +456,8 @@ const ClientConverter = (() => {
             borderWidth: hasSomeBorder ? Math.max(blw, btw) : 0,
             borderColor: hasSomeBorder ? (solidBorderL ? blc : btc) : null,
             borderRadius: bRadius,
+            gradientData,
+            rotation,
           });
         }
         return;
@@ -286,77 +469,111 @@ const ClientConverter = (() => {
     if (doc.body) walk(doc.body, 0);
 
     const rootBg = doc.defaultView.getComputedStyle(doc.body).backgroundColor;
-    return { rawElements: results, rootBg };
+    return { rawElements: results, rootBg, iconElements };
   }
 
   // ── Convert raw DOM elements to PPTX units ──
-  function convertToSlideUnits(rawElements, rootBg, width, height) {
-    const TEXT_PAD_PX = 15; // extra width for text containers to prevent wrapping
+  function convertToSlideUnits(rawElements, rootBg, width, height, iconImages) {
+    const TEXT_PAD_PX = 15;
 
-    const elements = rawElements.map((el) => {
-      const o = {
-        id: el.id,
-        type: el.type,
-        tag: el.tag,
-        x: px2inX(Math.max(0, el.x), width),
-        y: px2inY(Math.max(0, el.y), height),
-        w: px2inX(el.type === "text" ? el.w + TEXT_PAD_PX : el.w, width),
-        h: px2inY(el.h, height),
-        zIndex: el.zIndex || 0,
-        opacity: el.opacity ?? 1,
-      };
+    // Determine slide background (last _slideBg wins)
+    let slideBg = rgbaToHex(rootBg) || "FFFFFF";
+    for (const el of rawElements) {
+      if (el.type === "_slideBg" && el.bgColor) {
+        const hex = rgbaToHex(el.bgColor);
+        if (hex) slideBg = hex;
+      }
+    }
 
-      if (o.x + o.w > SLIDE_W) o.w = SLIDE_W - o.x;
-      if (o.y + o.h > SLIDE_H) o.h = SLIDE_H - o.y;
-      if (o.w < 0) o.w = 0;
-      if (o.h < 0) o.h = 0;
+    const elements = rawElements
+      .filter(el => el.type !== "_slideBg")
+      .map((el) => {
+        // Convert rasterized icons to image type
+        if (el.type === "icon") {
+          const data = iconImages ? iconImages[el.id] : null;
+          if (!data) return null;
+          return {
+            id: el.id,
+            type: "image",
+            tag: el.tag,
+            x: px2inX(Math.max(0, el.x), width),
+            y: px2inY(Math.max(0, el.y), height),
+            w: px2inX(el.w, width),
+            h: px2inY(el.h, height),
+            zIndex: el.zIndex || 0,
+            opacity: el.opacity ?? 1,
+            imgSrc: data,
+          };
+        }
 
-      if (el.type === "text") {
-        o.text = el.text;
-        o.fontSize = Math.round(pxToPt(el.fontSize, width) * 10) / 10;
-        o.fontFamily = el.fontFamily;
-        o.bold = parseInt(el.fontWeight) >= 700;
-        o.italic = el.fontStyle === "italic";
-        o.color = rgbaToHex(el.color) || "000000";
-        o.textTransform = el.textTransform;
-        o.textAlign = el.textAlign === "start" ? "left" : el.textAlign;
-        o.letterSpacing = (el.letterSpacing && el.letterSpacing !== "normal")
-          ? parseFloat(el.letterSpacing) : 0;
-        o.pL = px2inX(el.pL, width);
-        o.pT = px2inY(el.pT, height);
-        o.pR = px2inX(el.pR, width);
-        o.pB = px2inY(el.pB, height);
-        o.bgColor = rgbaToHex(el.bgColor);
-        o.bgOpacity = el.bgColor ? rgbaOpacity(el.bgColor) : 1;
-        o.borderWidth = el.borderWidth > 0 ? px2inX(el.borderWidth, width) : 0;
-        o.borderColor = rgbaToHex(el.borderColor);
-        o.borderRadius = el.borderRadius;
-        if (el.lineHeight && el.lineHeight !== "normal") {
-          const lhPx = parseFloat(el.lineHeight);
-          if (!isNaN(lhPx) && el.fontSize > 0) {
-            o.lineSpacingPct = Math.round((lhPx / el.fontSize) * 100);
+        const o = {
+          id: el.id,
+          type: el.type,
+          tag: el.tag,
+          x: px2inX(Math.max(0, el.x), width),
+          y: px2inY(Math.max(0, el.y), height),
+          w: px2inX(el.type === "text" ? el.w + TEXT_PAD_PX : el.w, width),
+          h: px2inY(el.h, height),
+          zIndex: el.zIndex || 0,
+          opacity: el.opacity ?? 1,
+        };
+
+        if (o.x + o.w > SLIDE_W) o.w = SLIDE_W - o.x;
+        if (o.y + o.h > SLIDE_H) o.h = SLIDE_H - o.y;
+        if (o.w < 0) o.w = 0;
+        if (o.h < 0) o.h = 0;
+
+        if (el.rotation) o.rotation = el.rotation;
+
+        if (el.type === "text") {
+          o.text = el.text;
+          o.fontSize = Math.round(pxToPt(el.fontSize, width) * 10) / 10;
+          o.fontFamily = el.fontFamily;
+          o.bold = parseInt(el.fontWeight) >= 700;
+          o.italic = el.fontStyle === "italic";
+          o.color = rgbaToHex(el.color) || "000000";
+          o.textTransform = el.textTransform;
+          o.textAlign = el.textAlign === "start" ? "left" : el.textAlign;
+          o.letterSpacing = (el.letterSpacing && el.letterSpacing !== "normal")
+            ? parseFloat(el.letterSpacing) : 0;
+          o.pL = px2inX(el.pL, width);
+          o.pT = px2inY(el.pT, height);
+          o.pR = px2inX(el.pR, width);
+          o.pB = px2inY(el.pB, height);
+          o.bgColor = rgbaToHex(el.bgColor);
+          o.bgOpacity = el.bgColor ? rgbaOpacity(el.bgColor) : 1;
+          o.borderWidth = el.borderWidth > 0 ? px2inX(el.borderWidth, width) : 0;
+          o.borderColor = rgbaToHex(el.borderColor);
+          o.borderRadius = el.borderRadius;
+          if (el.gradientData) o.gradient = parseGradient(el.gradientData);
+          if (el.lineHeight && el.lineHeight !== "normal") {
+            const lhPx = parseFloat(el.lineHeight);
+            if (!isNaN(lhPx) && el.fontSize > 0) {
+              o.lineSpacingPct = Math.round((lhPx / el.fontSize) * 100);
+            }
           }
         }
-      }
 
-      if (el.type === "shape" || el.type === "bgImage") {
-        o.bgColor = rgbaToHex(el.bgColor);
-        o.bgOpacity = el.bgColor ? rgbaOpacity(el.bgColor) : 1;
-        o.borderRadius = el.borderRadius || 0;
-        o.borderWidth = el.borderWidth > 0 ? px2inX(el.borderWidth, width) : 0;
-        o.borderColor = rgbaToHex(el.borderColor);
-        o.isDashed = el.isDashed || false;
-        o.bgImageUrl = el.bgImageUrl || null;
-      }
+        if (el.type === "shape" || el.type === "bgImage") {
+          o.bgColor = rgbaToHex(el.bgColor);
+          o.bgOpacity = el.bgColor ? rgbaOpacity(el.bgColor) : 1;
+          o.borderRadius = el.borderRadius || 0;
+          o.borderWidth = el.borderWidth > 0 ? px2inX(el.borderWidth, width) : 0;
+          o.borderColor = rgbaToHex(el.borderColor);
+          o.isDashed = el.isDashed || false;
+          o.bgImageUrl = el.bgImageUrl || null;
+          if (el.gradientData) o.gradient = parseGradient(el.gradientData);
+        }
 
-      if (el.type === "image") {
-        o.imgSrc = el.imgSrc;
-      }
+        if (el.type === "image") {
+          o.imgSrc = el.imgSrc;
+        }
 
-      return o;
-    });
+        return o;
+      })
+      .filter(Boolean);
 
-    return { elements, background: rgbaToHex(rootBg) || "FFFFFF", width, height };
+    return { elements, background: slideBg, width, height };
   }
 
   // ── Font mapping ──
@@ -397,7 +614,11 @@ const ClientConverter = (() => {
 
     if (el.type === "image") {
       const data = await resolveImage(el.imgSrc);
-      if (data) slide.addImage({ data, x: el.x, y: el.y, w: el.w, h: el.h });
+      if (data) {
+        const imgOpts = { data, x: el.x, y: el.y, w: el.w, h: el.h };
+        if (el.rotation) imgOpts.rotate = el.rotation;
+        slide.addImage(imgOpts);
+      }
       return;
     }
 
@@ -410,7 +631,10 @@ const ClientConverter = (() => {
     if (el.type === "shape") {
       const opts = { x: el.x, y: el.y, w: el.w, h: el.h };
 
-      if (el.bgColor) {
+      if (el.gradient && el.gradient.stops && el.gradient.stops.length >= 2) {
+        const bgT = Math.round((1 - (el.bgOpacity ?? 1)) * 100);
+        opts.fill = { color: el.gradient.stops[0].color, transparency: Math.min(100, bgT + trans) };
+      } else if (el.bgColor) {
         const bgT = Math.round((1 - (el.bgOpacity ?? 1)) * 100);
         opts.fill = { color: el.bgColor, transparency: Math.min(100, bgT + trans) };
       }
@@ -422,6 +646,8 @@ const ClientConverter = (() => {
           color: el.borderColor,
         };
       }
+
+      if (el.rotation) opts.rotate = el.rotation;
 
       const isCircle = el.borderRadius >= 100 && Math.abs(el.w - el.h) < 0.15;
       if (isCircle) {
@@ -474,7 +700,12 @@ const ClientConverter = (() => {
         opts.charSpacing = Math.round(el.letterSpacing * 100) / 100;
       }
 
-      if (el.bgColor) {
+      if (el.gradient && el.gradient.stops && el.gradient.stops.length >= 2) {
+        opts.fill = {
+          color: el.gradient.stops[0].color,
+          transparency: Math.round((1 - (el.bgOpacity ?? 1)) * 100),
+        };
+      } else if (el.bgColor) {
         opts.fill = {
           color: el.bgColor,
           transparency: Math.round((1 - (el.bgOpacity ?? 1)) * 100),
@@ -493,6 +724,8 @@ const ClientConverter = (() => {
         opts.rectRadius = Math.min(0.15, px2inX(el.borderRadius, sd.width));
       }
 
+      if (el.rotation) opts.rotate = el.rotation;
+
       slide.addText(txt, opts);
     }
   }
@@ -506,7 +739,6 @@ const ClientConverter = (() => {
       document.body.appendChild(iframe);
 
       iframe.onload = () => {
-        // Wait for fonts + rendering
         const win = iframe.contentWindow;
         const doc = iframe.contentDocument;
         if (!doc || !doc.body) {
@@ -525,14 +757,12 @@ const ClientConverter = (() => {
         reject(new Error("Iframe load error"));
       };
 
-      // Write HTML content via srcdoc
       iframe.srcdoc = htmlContent;
     });
   }
 
   // ── Screenshot mode: capture iframe as image using html2canvas ──
   async function captureScreenshot(doc, win, width, height) {
-    // html2canvas must be loaded globally
     if (typeof html2canvas === "undefined") {
       throw new Error("html2canvas library not loaded — screenshot mode unavailable");
     }
@@ -553,13 +783,6 @@ const ClientConverter = (() => {
   // PUBLIC API
   // ════════════════════════════════════════════════════════════════════════
 
-  /**
-   * Convert an array of HTML File objects to a PPTX Blob.
-   * @param {File[]} files - HTML files
-   * @param {Object} options - { resolution: "720p"|"1080p", mode: "editable"|"screenshot" }
-   * @param {Function} onProgress - callback(fileIndex, totalFiles, message)
-   * @returns {Promise<Blob>}
-   */
   async function convert(files, options, onProgress) {
     const { resolution = "720p", mode = "editable" } = options || {};
     const width = resolution === "1080p" ? 1920 : 1280;
@@ -582,7 +805,6 @@ const ClientConverter = (() => {
       const htmlContent = await file.text();
 
       if (mode === "screenshot") {
-        // Screenshot mode: render in iframe, capture as image
         const { iframe, doc, win } = await loadHtmlInIframe(htmlContent, width, height);
         try {
           const dataUri = await captureScreenshot(doc, win, width, height);
@@ -592,17 +814,22 @@ const ClientConverter = (() => {
           document.body.removeChild(iframe);
         }
       } else {
-        // Editable mode: extract DOM elements and build native PPTX objects
         const { iframe, doc } = await loadHtmlInIframe(htmlContent, width, height);
         try {
-          const { rawElements, rootBg } = extractElementsFromDocument(doc, width, height);
-          const slideData = convertToSlideUnits(rawElements, rootBg, width, height);
+          const { rawElements, rootBg, iconElements } = extractElementsFromDocument(doc, width, height);
+
+          // Rasterize FontAwesome icons via html2canvas
+          const iconImages = {};
+          for (const { id, element } of iconElements) {
+            const dataUri = await rasterizeElement(element);
+            if (dataUri) iconImages[id] = dataUri;
+          }
+
+          const slideData = convertToSlideUnits(rawElements, rootBg, width, height, iconImages);
 
           const slide = pptx.addSlide();
           if (slideData.background) slide.background = { color: slideData.background };
 
-          // Ensure text always renders on top: bump every text element's zIndex
-          // above the highest shape zIndex so text is never covered.
           const maxNonTextZ = slideData.elements
             .filter(e => e.type !== "text")
             .reduce((mx, e) => Math.max(mx, e.zIndex || 0), 0);
@@ -613,7 +840,6 @@ const ClientConverter = (() => {
             }
           }
 
-          // Render in strict layer order: shapes → images → text (always last)
           const byZ = (a, b) => (a.zIndex - b.zIndex) || (a.id - b.id);
           const shapes = slideData.elements.filter(e => e.type === "shape" || e.type === "bgImage").sort(byZ);
           const images = slideData.elements.filter(e => e.type === "image").sort(byZ);
@@ -636,7 +862,6 @@ const ClientConverter = (() => {
 
     if (onProgress) onProgress(totalFiles, totalFiles, "Generating PPTX…");
 
-    // PptxGenJS browser build returns a Blob when using write("blob")
     const blob = await pptx.write({ outputType: "blob" });
     return blob;
   }
