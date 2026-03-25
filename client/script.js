@@ -127,6 +127,7 @@
     const count = selectedFiles.length;
     fileCount.textContent = count + (count === 1 ? " file" : " files");
     fileListArea.classList.toggle("has-files", count > 0);
+    fileListArea.closest(".upload-row").classList.toggle("has-files", count > 0);
     convertBtn.disabled = count === 0;
     hideToast();
   }
