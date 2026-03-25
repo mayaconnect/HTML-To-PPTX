@@ -481,7 +481,18 @@ async function extractSlideElements(browser, htmlFilePath, viewport) {
           return;
         }
 
-        const leaf = isLeafText(el);
+        let leaf = isLeafText(el);
+
+        // ── FIX: Flex/grid containers must NOT be treated as leaf text ──
+        // Each flex/grid item has its own bounding box and styling;
+        // treating the parent as leaf would concatenate all child text into
+        // one text box and lose individual child backgrounds/borders.
+        if (leaf) {
+          const disp = cs.display;
+          if (disp === 'flex' || disp === 'inline-flex' || disp === 'grid' || disp === 'inline-grid') {
+            leaf = false;
+          }
+        }
 
         // ── FIX: Don't emit separate shape when element is a leaf text node ──
         // The text element already carries bgColor, borderColor, borderRadius
@@ -580,6 +591,11 @@ async function extractSlideElements(browser, htmlFilePath, viewport) {
       try {
         const handle = await page.$(el._selector);
         if (handle) {
+          // Force transparent background so only the icon/SVG glyph is captured
+          await page.evaluate(sel => {
+            const e = document.querySelector(sel);
+            if (e) e.style.backgroundColor = 'transparent';
+          }, el._selector);
           const screenshotBuf = await handle.screenshot({ type: "png", omitBackground: true });
           iconImages[el.id] = `data:image/png;base64,${screenshotBuf.toString("base64")}`;
           await handle.dispose();

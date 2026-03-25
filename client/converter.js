@@ -137,6 +137,9 @@ const ClientConverter = (() => {
   async function rasterizeElement(el) {
     if (typeof html2canvas === "undefined") return null;
     try {
+      // Force transparent background so only the icon/SVG glyph is captured
+      const origBg = el.style.backgroundColor;
+      el.style.backgroundColor = 'transparent';
       const rect = el.getBoundingClientRect();
       const canvas = await html2canvas(el, {
         width: Math.ceil(rect.width),
@@ -146,6 +149,7 @@ const ClientConverter = (() => {
         useCORS: true,
         logging: false,
       });
+      el.style.backgroundColor = origBg;
       return canvas.toDataURL("image/png");
     } catch {
       return null;
@@ -408,7 +412,18 @@ const ClientConverter = (() => {
         return;
       }
 
-      const leaf = isLeafText(el);
+      let leaf = isLeafText(el);
+
+      // ── FIX: Flex/grid containers must NOT be treated as leaf text ──
+      // Each flex/grid item has its own bounding box and styling;
+      // treating the parent as leaf would concatenate all child text into
+      // one text box and lose individual child backgrounds/borders.
+      if (leaf) {
+        const disp = cs.display;
+        if (disp === 'flex' || disp === 'inline-flex' || disp === 'grid' || disp === 'inline-grid') {
+          leaf = false;
+        }
+      }
 
       // ── FIX: Don't emit separate shape for leaf text with bg ──
       if (!leaf && (bgPresent || hasSomeBorder || bgImageUrl || gradientData)) {
